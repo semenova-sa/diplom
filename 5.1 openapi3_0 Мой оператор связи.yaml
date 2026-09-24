@@ -1,0 +1,883 @@
+openapi: 3.0.0
+info:
+  title: API мобильного приложения «Мой оператор связи»
+  version: 1.0.0
+  description: |
+    Спецификация OpenAPI для MVP приложения «Мой оператор связи».
+    Разработана в рамках дипломного проекта.
+
+servers:
+  - url: https://api.myoperator.ru/v1
+    description: Продукционный сервер (MVP)
+
+tags:
+  - name: Auth
+    description: Авторизация и управление сессией
+  - name: Contract
+    description: Управление договором (баланс, тарифы, опции)
+  - name: Tariff
+    description: Справочник тарифов
+  - name: Option
+    description: Справочник опций
+  - name: Payment
+    description: Финансовые операции
+
+paths:
+  /auth/send-code:
+    post:
+      tags: [Auth]
+      summary: Отправить SMS с кодом подтверждения
+      description: Абонент вводит номер телефона, система отправляет одноразовый код
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phoneNumber]
+              properties:
+                phoneNumber:
+                  type: string
+                  description: Номер телефона в международном формате
+                  example: "+79001234567"
+      responses:
+        '200':
+          description: Код отправлен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Код отправлен"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/verify:
+    post:
+      tags: [Auth]
+      summary: Проверить SMS-код и завершить авторизацию
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phoneNumber, code]
+              properties:
+                phoneNumber:
+                  type: string
+                  example: "+79001234567"
+                code:
+                  type: string
+                  description: Код из SMS
+                  example: "123456"
+      responses:
+        '200':
+          description: Успешная авторизация
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                    description: JWT-токен доступа (TTL 15 минут)
+                  refreshToken:
+                    type: string
+                    description: Refresh-токен (TTL 30 дней)
+                  contractId:
+                    type: integer
+                    format: int64
+                    description: Идентификатор договора
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Обновить Access Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Новый accessToken
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/2fa/request:
+    post:
+      tags: [Auth]
+      summary: Запросить 2FA-код для критической операции
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, contractId]
+              properties:
+                operation:
+                  type: string
+                  enum: [changeTariff, addOption]
+                  description: Тип критической операции
+                contractId:
+                  type: integer
+                  format: int64
+      responses:
+        '200':
+          description: Код отправлен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "2FA-код отправлен"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/2fa/verify:
+    post:
+      tags: [Auth]
+      summary: Проверить 2FA-код и получить временный токен
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operation, contractId, code]
+              properties:
+                operation:
+                  type: string
+                  enum: [changeTariff, addOption]
+                contractId:
+                  type: integer
+                  format: int64
+                code:
+                  type: string
+                  description: 6-значный код из SMS
+                  example: "654321"
+      responses:
+        '200':
+          description: Код подтверждён, выдан временный токен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  twoFaToken:
+                    type: string
+                    description: Одноразовый токен для выполнения операции (TTL 5 минут)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /api/contracts/{contractId}:
+    get:
+      tags: [Contract]
+      summary: Получить информацию о договоре
+      description: Возвращает баланс, статус, номер телефона, остатки пакетов, текущий тариф и список опций.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Информация о договоре
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contract'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/contracts/{contractId}/balance:
+    get:
+      tags: [Contract]
+      summary: Получить текущий баланс
+      description: При недоступности биллинга возвращает кэшированное значение с полем cachedAt
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Текущий баланс
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance:
+                    type: number
+                    description: Текущий баланс (рубли)
+                  cachedAt:
+                    type: string
+                    format: date-time
+                    description: Время кэширования (присутствует, если данные из кэша)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/contracts/{contractId}/tariff:
+    get:
+      tags: [Contract]
+      summary: Получить текущий тариф
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Информация о текущем тарифе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tariff'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Contract]
+      summary: Асинхронно сменить тариф
+      description: Запрос на смену тарифа принимается в обработку. Статус выполнения отслеживается по operationId через GET /api/operations/{operationId}/status.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tariffId]
+              properties:
+                tariffId:
+                  type: integer
+                  format: int64
+      headers:
+        X-2FA-Token:
+          description: Временный токен, полученный после проверки 2FA-кода
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Запрос принят в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Недействительный 2FA-токен
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Конфликт (задолженность, тариф недоступен и т.п.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/contracts/{contractId}/options:
+    get:
+      tags: [Contract]
+      summary: Получить список подключенных опций
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Список опций
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Option'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Contract]
+      summary: Асинхронно подключить опцию
+      description: Запрос на подключение опции принимается в обработку. Статус выполнения отслеживается по operationId через GET /api/operations/{operationId}/status.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [optionId]
+              properties:
+                optionId:
+                  type: integer
+                  format: int64
+      headers:
+        X-2FA-Token:
+          description: Временный токен, полученный после проверки 2FA-кода
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Запрос на подключение опции принят в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Недействительный 2FA-токен
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Конфликт (опция уже подключена или недостаточно средств)
+
+  /api/contracts/{contractId}/options/{optionId}:
+    delete:
+      tags: [Contract]
+      summary: Асинхронно отключить опцию
+      description: Запрос на отключение опции принимается в обработку. Статус выполнения отслеживается по operationId через GET /api/operations/{operationId}/status.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: optionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      headers:
+        X-2FA-Token:
+          description: Временный токен, полученный после проверки 2FA-кода
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Запрос на отключение опции принят в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Недействительный 2FA-токен
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/operations/{operationId}/status:
+    get:
+      tags: [Contract]
+      summary: Получить статус асинхронной операции
+      description: Возвращает текущий статус выполнения операции (смена тарифа, подключение/отключение опции).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: operationId
+          in: path
+          required: true
+          schema:
+            type: string
+            description: Уникальный идентификатор операции (UUID)
+      responses:
+        '200':
+          description: Текущий статус операции
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Операция с указанным ID не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tariffs:
+    get:
+      tags: [Tariff]
+      summary: Получить список доступных тарифов (с пагинацией)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Список тарифов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TariffList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/tariffs/{id}:
+    get:
+      tags: [Tariff]
+      summary: Получить информацию о конкретном тарифе
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Информация о тарифе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tariff'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/options:
+    get:
+      tags: [Option]
+      summary: Получить список доступных опций (с пагинацией)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Список опций
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OptionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/options/{id}:
+    get:
+      tags: [Option]
+      summary: Получить информацию о конкретной опции
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Информация об опции
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Option'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/contracts/{contractId}/payments/recharge:
+    post:
+      tags: [Payment]
+      summary: Пополнить баланс
+      description: Создаёт платёж типа RECHARGE. В MVP доступен только способ оплаты "CARD".
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: contractId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, paymentMethod]
+              properties:
+                amount:
+                  type: number
+                  minimum: 1
+                  description: Сумма пополнения (рубли)
+                paymentMethod:
+                  type: string
+                  enum: [CARD]
+                  description: Способ оплаты (для MVP только CARD)
+      responses:
+        '200':
+          description: Платёж проведён
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paymentId:
+                    type: integer
+                    format: int64
+                  newBalance:
+                    type: number
+                  status:
+                    type: string
+                    enum: [SUCCESS, PENDING, FAILED]
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Внутренняя ошибка при проведении платежа
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Contract:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        number:
+          type: string
+          description: Уникальный номер договора
+        phoneNumber:
+          type: string
+          description: Номер телефона (только чтение)
+        status:
+          type: string
+          enum: [ACTIVE, BLOCKED, TERMINATED]
+        balance:
+          type: number
+          description: Текущий баланс (только чтение, обновляется через платежи)
+        tariff:
+          $ref: '#/components/schemas/Tariff'
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/Option'
+        packagesRemains:
+          $ref: '#/components/schemas/PackagesRemains'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Tariff:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        code:
+          type: string
+          description: Уникальный бизнес-идентификатор
+        name:
+          type: string
+        description:
+          type: string
+        monthlyFee:
+          type: number
+        includedMinutes:
+          type: integer
+        includedSms:
+          type: integer
+        includedData:
+          type: integer
+          description: Включенный трафик (Мб)
+
+    Option:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        code:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+        available:
+          type: boolean
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        amount:
+          type: number
+        paymentDate:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [RECHARGE, WRITE_OFF]
+        description:
+          type: string
+        status:
+          type: string
+          enum: [SUCCESS, PENDING, FAILED]
+
+    PackagesRemains:
+      type: object
+      properties:
+        minutesRemaining:
+          type: integer
+          description: Остаток минут
+        smsRemaining:
+          type: integer
+          description: Остаток SMS
+        dataRemaining:
+          type: integer
+          description: Остаток интернет-трафика (Мб)
+        validUntil:
+          type: string
+          format: date
+          description: Дата окончания текущего пакетного периода
+        cachedAt:
+          type: string
+          format: date-time
+          description: Время кэширования данных (опционально)
+
+    Pagination:
+      type: object
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        totalCount:
+          type: integer
+
+    TariffList:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        tariffs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tariff'
+
+    OptionList:
+      type: object
+      properties:
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/Option'
+
+    TwoFACode:
+      type: object
+      properties:
+        operation:
+          type: string
+          enum: [changeTariff, addOption]
+        contractId:
+          type: integer
+          format: int64
+
+    TwoFAVerify:
+      type: object
+      properties:
+        operation:
+          type: string
+          enum: [changeTariff, addOption]
+        contractId:
+          type: integer
+          format: int64
+        code:
+          type: string
+          description: 6-значный 2FA-код
+
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Код ошибки
+        message:
+          type: string
+          description: Сообщение для пользователя
+        details:
+          type: object
+          description: Дополнительная информация (опционально)
+
+    OperationStatus:
+      type: object
+      properties:
+        operationId:
+          type: string
+          description: Уникальный идентификатор асинхронной операции (UUID)
+        status:
+          type: string
+          enum: [PENDING, IN_PROGRESS, SUCCESS, FAILED]
+          description: Текущий статус операции
+        message:
+          type: string
+          description: Сообщение для пользователя
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+  responses:
+    BadRequest:
+      description: Неверный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Не авторизован или токен истёк
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Доступ запрещён (неверный 2FA-токен или чужие данные)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Превышен лимит запросов
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
